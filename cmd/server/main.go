@@ -4,21 +4,23 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 )
 
-const (
-	certPath   = "../../testdata/cert.pem"
-	cAcertPath = "../../testdata/ca.cert.pem"
-	keyPath    = "../../testdata/key.pem"
-	addr       = "localhost:8775"
+var (
+	certPath   = flag.String("cert-path", "../../testdata/cert.pem", "path to certificate")
+	cAcertPath = flag.String("client-ca-path", "../../testdata/ca.cert.pem", "path to client CA certificate")
+	keyPath    = flag.String("key-path", "../../testdata/key.pem", "path to certificate key")
+	addr       = flag.String("listen", "localhost:8775", "listening address")
 )
 
 func main() {
-	cAcertPEM, err := os.ReadFile(cAcertPath)
+	flag.Parse()
+	cAcertPEM, err := os.ReadFile(*cAcertPath)
 	if err != nil {
 		log.Fatalf("Couldn't read cert")
 	}
@@ -36,7 +38,7 @@ func main() {
 	clientRootPool := x509.NewCertPool()
 	clientRootPool.AddCert(cAcert)
 
-	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+	cert, err := tls.LoadX509KeyPair(*certPath, *keyPath)
 	if err != nil {
 		log.Fatalf("Couldn't load cert")
 	}
@@ -46,14 +48,44 @@ func main() {
 		TLSFlagsSupported: []tls.TLSFlag{tls.FlagSupportMTLS},
 		NextProtos:        []string{"h2"},
 	}
-	conn, err := tls.Listen("tcp", addr, config)
+	conn, err := tls.Listen("tcp", *addr, config)
 	if err != nil {
-		log.Fatalf("Couldn't listen on %s", addr)
+		log.Fatalf("Couldn't listen on %s", *addr)
 	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(resp http.ResponseWriter, req *http.Request) {
-		fmt.Fprintf(resp, "Hello world")
+
+		fmt.Fprintf(resp, "Client sent TLS Flags: %v\n", req.TLS.PeerTLSFlags)
+
+		fmt.Fprintf(resp, "Mutually supported TLS Flags: %v\n", req.TLS.AgreedTLSFlags)
+
+		if req.TLS.RequestClientCert {
+			fmt.Fprint(resp, "Client cert requested.\n")
+		} else {
+			fmt.Fprint(resp, "Client cert not requested.\n")
+		}
+
+		if len(req.TLS.PeerCertificates) != 0 {
+			fmt.Fprintf(resp, "Peer certificate successfully received.\n")
+			fmt.Fprintf(resp, "Cert received: %s\n", req.TLS.PeerCertificates[0].DNSNames[0])
+			cert := req.TLS.PeerCertificates[0]
+			opts := x509.VerifyOptions{
+				Roots:     clientRootPool,
+				KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+			}
+			chains, err := cert.Verify(opts)
+			if err != nil {
+				log.Print(err)
+			}
+			if len(chains) != 0 {
+				fmt.Fprint(resp, "Cert validated.\n")
+			} else {
+				fmt.Fprint(resp, "Cert invalid.\n")
+			}
+		} else {
+			fmt.Fprintf(resp, "No Peer certificate received or invalid cert.\n")
+		}
 	})
 	err = http.Serve(conn, mux)
 	if err != nil {
