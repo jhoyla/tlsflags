@@ -32,3 +32,6 @@ jobs:
 
     - name: Test
       run: ./go/bin/go test -v ./cmd/...
+
+    - name: Live Tests
+      run: make test 
